@@ -1,0 +1,35 @@
+version: "3.9"
+services:
+  postgres:
+    image: postgres:14.2
+    environment:
+      POSTGRES_USER: "postgres"
+      POSTGRES_PASSWORD: "postgres"
+    ports:
+      - "5432:5432"
+    networks:
+      backend:
+    volumes:
+      - ./sql/structured_data.sql:/docker-entrypoint-initdb.d/structured_data.sql
+
+  whether-service:
+    build:
+      context: ./cloud_data
+      dockerfile: Dockerfile
+    command: "uvicorn main:app --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+    networks:
+      backend:
+
+  ch_server:
+    image: yandex/clickhouse-server
+    ports:
+      - "8123:8123"
+    volumes:
+      - ./sql/clickhouse_init.sql:/docker-entrypoint-initdb.d/clickhouse_init.sql
+    networks:
+      backend:
+
+networks:
+  backend:
