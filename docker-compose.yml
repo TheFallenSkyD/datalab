@@ -1,4 +1,5 @@
 version: "3.9"
+
 services:
   postgres:
     image: postgres:14.2
@@ -7,27 +8,120 @@ services:
       POSTGRES_PASSWORD: "postgres"
     ports:
       - "5432:5432"
+    command: [ "postgres", "-c", "wal_level=logical" ]
     networks:
       backend:
     volumes:
       - ./sql/structured_data.sql:/docker-entrypoint-initdb.d/structured_data.sql
 
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: mysql
+      MYSQL_DATABASE: public
+    ports:
+      - "3307:3306"
+    command: mysqld --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    networks:
+      backend:
+    volumes:
+      - ./sql/mysql_init.sql:/docker-entrypoint-initdb.d/mysql_init.sql
+
   whether-service:
     build:
       context: ./cloud_data
       dockerfile: Dockerfile
-    command: "uvicorn main:app --host 0.0.0.0 --port 8000"
+    restart: always
+    command: "uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
     ports:
-      - "8000:8000"
+      - "8010:8000"
+    depends_on:
+      - kafka
+    volumes:
+      - ./cloud_data:/app
     networks:
       backend:
 
-  ch_server:
+  data-warehouse:
     image: yandex/clickhouse-server
     ports:
       - "8123:8123"
+      - "8443:8443"
+    environment:
+      CLICKHOUSE_USER: clickhouse-user
+      CLICKHOUSE_PASSWORD: secret
+    networks:
+      backend:
+
+  data-warehouse-client:
+    image: yandex/clickhouse-client
+    links:
+      - data-warehouse
+    networks:
+      backend:
+
+  zookeeper:
+    image: quay.io/debezium/zookeeper:1.9
+    ports:
+      - "2181:2181"
+      - "2888:2888"
+      - "3888:3888"
+    networks:
+      backend:
+
+  kafka:
+    image: quay.io/debezium/kafka:1.9
+    ports:
+      - "9092:9092"
+    restart: always
+    links:
+      - zookeeper
+    environment:
+      - ZOOKEEPER_CONNECT=zookeeper:2181
+    networks:
+      backend:
+
+  connect:
+    image: quay.io/debezium/connect:1.9
+    ports:
+      - "8083:8083"
+    links:
+      - kafka
+      - postgres
+    environment:
+      - BOOTSTRAP_SERVERS=kafka:9092
+      - GROUP_ID=1
+      - CONFIG_STORAGE_TOPIC=my_connect_configs
+      - OFFSET_STORAGE_TOPIC=my_connect_offsets
+      - STATUS_STORAGE_TOPIC=my_connect_statuses
+    networks:
+      backend:
+
+  console:
+    image: vectorized/console:latest
+    ports:
+      - "8081:8080"
+    links:
+      - kafka
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+    networks:
+      backend:
+
+  metabase:
+    image: bjeanes/metabase-clickhouse
+    ports:
+      - "3000:3000"
+    environment:
+      MB_DB_DBNAME: default
+      MB_DB_USER: clickhouse-user
+      MB_DB_PASS: secret
+      MB_DB_PORT: 8443
+      MB_DB_HOST: data-warehouse
     volumes:
-      - ./sql/clickhouse_init.sql:/docker-entrypoint-initdb.d/clickhouse_init.sql
+      - /home/app/metabase-data:/metabase-data
+    links:
+      - data-warehouse
     networks:
       backend:
 
